@@ -117,10 +117,11 @@ export async function POST(req: NextRequest) {
         document: docData 
       })
       
-    } catch (processError) {
-      console.error("Trigger error:", processError)
-      await adminSupabase.from('documents').update({ status: 'failed' }).eq('id', docData.id)
-      return NextResponse.json({ error: 'Failed to start processing' }, { status: 500 })
+    } catch (processError: any) {
+      console.error("Trigger error:", processError?.message || processError)
+      console.error("Full error:", JSON.stringify(processError, null, 2))
+      await adminSupabase.from('documents').update({ status: 'failed', failure_reason: processError?.message || 'Inngest trigger failed' }).eq('id', docData.id)
+      return NextResponse.json({ error: `Failed to start processing: ${processError?.message || 'Unknown Inngest error'}` }, { status: 500 })
     }
   } catch (error) {
     console.error("Upload error:", error)

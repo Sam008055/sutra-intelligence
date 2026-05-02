@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #050505;
+  --foreground: #ededed;
+  
+  /* Brand Colors */
+  --sutra-cyan: 0, 240, 255;
+  --sutra-purple: 112, 0, 255;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .glass-panel {
+    @apply bg-white/5 border border-white/10 backdrop-blur-xl shadow-2xl;
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-[#00F0FF] to-[#7000FF];
+  }
+}
+
+/* Aurora Background Animations */
+@keyframes aurora-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -50px) scale(1.1); }
+  66% { transform: translate(-20px, 20px) scale(0.9); }
+}
+
+@keyframes aurora-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-30px, 50px) scale(1.2); }
+  66% { transform: translate(20px, -20px) scale(0.8); }
+}
+
+.aurora-blob-1 {
+  animation: aurora-1 15s ease-in-out infinite;
+  background: radial-gradient(circle at center, rgba(var(--sutra-purple), 0.15) 0%, transparent 70%);
+}
+
+.aurora-blob-2 {
+  animation: aurora-2 20s ease-in-out infinite reverse;
+  background: radial-gradient(circle at center, rgba(var(--sutra-cyan), 0.15) 0%, transparent 70%);
+}

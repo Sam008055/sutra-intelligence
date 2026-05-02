@@ -13,13 +13,28 @@ export const processDocument = inngest.createFunction(
     let chunks: string[] = [];
 
     if (fileType === 'application/pdf') {
-      const jobId = await step.run("upload-to-llamaparse", async () => {
+      // FAST PATH: Try local pdf-parse first
+      const fastChunks = await step.run("fast-path-extract", async () => {
         const { data, error } = await adminSupabase.storage.from("documents").download(storagePath);
         if (error || !data) throw new Error("Failed to download file from storage: " + error?.message);
-        const { uploadToLlamaParse } = await import("@/lib/chunker");
+        
+        const { parseWithPdfParse } = await import("@/lib/chunker");
         const arrayBuffer = await data.arrayBuffer();
-        return await uploadToLlamaParse(Buffer.from(arrayBuffer));
+        return await parseWithPdfParse(Buffer.from(arrayBuffer));
       });
+
+      if (fastChunks && fastChunks.length > 0) {
+        // Fast path succeeded! Skip LlamaParse.
+        chunks = fastChunks;
+      } else {
+        // DEEP PATH: Fast path failed (scanned document or empty text). Fallback to LlamaParse.
+        const jobId = await step.run("upload-to-llamaparse", async () => {
+          const { data, error } = await adminSupabase.storage.from("documents").download(storagePath);
+          if (error || !data) throw new Error("Failed to download file from storage: " + error?.message);
+          const { uploadToLlamaParse } = await import("@/lib/chunker");
+          const arrayBuffer = await data.arrayBuffer();
+          return await uploadToLlamaParse(Buffer.from(arrayBuffer));
+        });
 
       // Poll LlamaParse using Inngest step.sleep
       let status = 'PENDING';
@@ -53,6 +68,7 @@ export const processDocument = inngest.createFunction(
         const { semanticChunkText } = await import("@/lib/chunker");
         return semanticChunkText(resultMarkdown);
       });
+    }
 
     } else {
       chunks = await step.run("parse-and-chunk-word", async () => {

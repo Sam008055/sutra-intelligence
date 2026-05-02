@@ -1,7 +1,25 @@
 import mammoth from 'mammoth'
+import pdfParse from 'pdf-parse'
 
 const MAX_CHUNK_SIZE = 1200
 const MIN_CHUNK_SIZE = 100
+
+export async function parseWithPdfParse(buffer: Buffer): Promise<string[] | null> {
+  try {
+    const data = await pdfParse(buffer);
+    const text = data.text;
+    
+    // Check if it actually extracted meaningful text (fast path success)
+    if (!text || text.trim().length < 500) {
+      return null; // Fallback to LlamaParse
+    }
+
+    return semanticChunkText(text);
+  } catch (error) {
+    console.warn("pdf-parse failed, falling back to LlamaParse", error);
+    return null; // Fallback to LlamaParse on error
+  }
+}
 
 export async function uploadToLlamaParse(buffer: Buffer): Promise<string> {
   const apiKey = process.env.LLAMAPARSE_API_KEY

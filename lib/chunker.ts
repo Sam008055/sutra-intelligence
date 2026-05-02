@@ -3,57 +3,17 @@ import mammoth from 'mammoth'
 const MAX_CHUNK_SIZE = 1200
 const MIN_CHUNK_SIZE = 100
 
-/**
- * Parse a document buffer and return text chunks.
- * For PDFs: Uses LlamaParse API for enterprise-grade OCR and parsing.
- */
-export async function parseAndChunk(buffer: Buffer, filetype: string): Promise<string[] | null> {
-  try {
-    let text = ''
-
-    if (filetype === 'application/pdf') {
-      console.log("Sending PDF to LlamaParse...")
-      text = await parseWithLlamaParse(buffer)
-    } else if (
-      filetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      filetype === 'application/msword'
-    ) {
-      const data = await mammoth.extractRawText({ buffer })
-      text = data.value
-    } else {
-      return null
-    }
-
-    if (!text || text.trim().length < 50) {
-      console.error(`Text extraction too short: ${text?.length || 0} chars`)
-      throw new Error("Document contains no readable text or is empty.")
-    }
-
-    console.log(`Extracted ${text.length} chars, semantically chunking...`)
-    return semanticChunkText(text)
-  } catch (error) {
-    console.error('Extraction Error:', error)
-    throw error // Bubble up the error to Inngest to trigger failure_reason
-  }
-}
-
-async function parseWithLlamaParse(buffer: Buffer): Promise<string> {
+export async function uploadToLlamaParse(buffer: Buffer): Promise<string> {
   const apiKey = process.env.LLAMAPARSE_API_KEY
-  if (!apiKey) {
-    throw new Error("LLAMAPARSE_API_KEY is not set in environment variables.")
-  }
+  if (!apiKey) throw new Error("LLAMAPARSE_API_KEY is not set.")
 
-  // 1. Upload
   const formData = new FormData();
-  // Next.js fetch API FormData supports Blobs
   const blob = new Blob([buffer], { type: 'application/pdf' });
   formData.append("file", blob, "document.pdf");
 
   const uploadRes = await fetch("https://api.cloud.llamaindex.ai/api/parsing/upload", {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`
-    },
+    headers: { "Authorization": `Bearer ${apiKey}` },
     body: formData
   });
 
@@ -63,50 +23,54 @@ async function parseWithLlamaParse(buffer: Buffer): Promise<string> {
   }
 
   const uploadData = await uploadRes.json();
-  const jobId = uploadData.id;
-  console.log(`LlamaParse Job ID: ${jobId}. Polling for completion...`)
+  return uploadData.id;
+}
 
-  // 2. Poll for completion
-  let resultMarkdown = "";
-  let attempts = 0;
-  const maxAttempts = 60; // 2 minutes max (2000ms * 60)
+export async function checkLlamaParseStatus(jobId: string): Promise<{status: string, markdown?: string}> {
+  const apiKey = process.env.LLAMAPARSE_API_KEY
+  if (!apiKey) throw new Error("LLAMAPARSE_API_KEY is not set.")
 
-  while (attempts < maxAttempts) {
-    await new Promise(r => setTimeout(r, 2000));
-    attempts++;
-
-    const statusRes = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}`, {
-       headers: { "Authorization": `Bearer ${apiKey}` }
+  const statusRes = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}`, {
+     headers: { "Authorization": `Bearer ${apiKey}` }
+  });
+  
+  if (!statusRes.ok) return { status: 'PENDING' };
+  
+  const statusData = await statusRes.json();
+  
+  if (statusData.status === "SUCCESS") {
+    const markdownRes = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}/result/markdown`, {
+      headers: { "Authorization": `Bearer ${apiKey}` }
     });
-    
-    if (!statusRes.ok) continue;
-    
-    const statusData = await statusRes.json();
-    
-    if (statusData.status === "SUCCESS") {
-      const markdownRes = await fetch(`https://api.cloud.llamaindex.ai/api/parsing/job/${jobId}/result/markdown`, {
-        headers: { "Authorization": `Bearer ${apiKey}` }
-      });
-      const markdownData = await markdownRes.json();
-      resultMarkdown = markdownData.markdown;
-      break;
-    } else if (statusData.status === "ERROR") {
-      throw new Error("LlamaParse job failed during processing.");
+    const markdownData = await markdownRes.json();
+    return { status: "SUCCESS", markdown: markdownData.markdown };
+  } else if (statusData.status === "ERROR") {
+    return { status: "ERROR" };
+  }
+
+  return { status: statusData.status };
+}
+
+export async function parseWordDocument(buffer: Buffer): Promise<string[] | null> {
+  try {
+    const data = await mammoth.extractRawText({ buffer })
+    const text = data.value
+
+    if (!text || text.trim().length < 50) {
+      throw new Error("Document contains no readable text or is empty.")
     }
-  }
 
-  if (!resultMarkdown) {
-    throw new Error("LlamaParse timed out after 2 minutes.");
+    return semanticChunkText(text)
+  } catch (error) {
+    throw error
   }
-
-  return resultMarkdown;
 }
 
 /**
  * Split text into semantic chunks based on paragraphs (\n\n) and headers.
  * Groups small paragraphs together up to MAX_CHUNK_SIZE.
  */
-function semanticChunkText(text: string): string[] {
+export function semanticChunkText(text: string): string[] {
   // Normalize whitespace but preserve paragraph breaks
   const normalized = text.replace(/\n{3,}/g, '\n\n').trim()
   

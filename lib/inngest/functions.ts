@@ -9,32 +9,70 @@ export const processDocument = inngest.createFunction(
     const { documentId, companyId, storagePath, fileType } = event.data;
     const adminSupabase = createAdminClient();
 
-    // Step 1: Download and parse the document
-    const chunks = await step.run("parse-and-chunk", async () => {
-      // Download the file
-      const { data, error } = await adminSupabase.storage
-        .from("documents")
-        .download(storagePath);
-      
-      if (error || !data) throw new Error("Failed to download file from storage: " + error?.message);
-      
-      // Parse it directly in the same step
-      const arrayBuffer = await data.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      let extractedChunks: string[] | null = null;
-      try {
-        extractedChunks = await parseAndChunk(buffer, fileType);
-      } catch (err: any) {
-        await adminSupabase.from("documents").update({ status: "failed", failure_reason: err.message || "Failed to parse document" }).eq("id", documentId);
-        throw err;
+    // Step 1: Download and start parsing
+    let chunks: string[] = [];
+
+    if (fileType === 'application/pdf') {
+      const jobId = await step.run("upload-to-llamaparse", async () => {
+        const { data, error } = await adminSupabase.storage.from("documents").download(storagePath);
+        if (error || !data) throw new Error("Failed to download file from storage: " + error?.message);
+        const { uploadToLlamaParse } = await import("@/lib/chunker");
+        const arrayBuffer = await data.arrayBuffer();
+        return await uploadToLlamaParse(Buffer.from(arrayBuffer));
+      });
+
+      // Poll LlamaParse using Inngest step.sleep
+      let status = 'PENDING';
+      let resultMarkdown = '';
+      let attempts = 0;
+
+      while (status !== 'SUCCESS' && attempts < 30) {
+        await step.sleep(`wait-for-parse-${attempts}`, "5s");
+        
+        const pollResult = await step.run(`check-status-${attempts}`, async () => {
+          const { checkLlamaParseStatus } = await import("@/lib/chunker");
+          return await checkLlamaParseStatus(jobId);
+        });
+
+        status = pollResult.status;
+        if (status === 'SUCCESS' && pollResult.markdown) {
+          resultMarkdown = pollResult.markdown;
+        } else if (status === 'ERROR') {
+          await adminSupabase.from("documents").update({ status: "failed", failure_reason: "LlamaParse job failed." }).eq("id", documentId);
+          throw new Error("LlamaParse job failed during processing.");
+        }
+        attempts++;
       }
-      
-      if (!extractedChunks || extractedChunks.length === 0) {
-        await adminSupabase.from("documents").update({ status: "failed", failure_reason: "Document contains no readable text." }).eq("id", documentId);
-        throw new Error("Could not extract text from document");
+
+      if (!resultMarkdown) {
+        await adminSupabase.from("documents").update({ status: "failed", failure_reason: "LlamaParse timed out." }).eq("id", documentId);
+        throw new Error("LlamaParse timed out.");
       }
-      return extractedChunks;
-    });
+
+      chunks = await step.run("chunk-pdf-text", async () => {
+        const { semanticChunkText } = await import("@/lib/chunker");
+        return semanticChunkText(resultMarkdown);
+      });
+
+    } else {
+      chunks = await step.run("parse-and-chunk-word", async () => {
+        const { data, error } = await adminSupabase.storage.from("documents").download(storagePath);
+        if (error || !data) throw new Error("Failed to download file from storage: " + error?.message);
+        
+        const { parseWordDocument } = await import("@/lib/chunker");
+        const arrayBuffer = await data.arrayBuffer();
+        const extracted = await parseWordDocument(Buffer.from(arrayBuffer));
+        if (!extracted || extracted.length === 0) {
+          throw new Error("Document contains no readable text");
+        }
+        return extracted;
+      });
+    }
+
+    if (!chunks || chunks.length === 0) {
+      await adminSupabase.from("documents").update({ status: "failed", failure_reason: "Document contains no readable text." }).eq("id", documentId);
+      throw new Error("Could not extract text from document");
+    }
 
     // Step 3: Embed chunks (done directly since step.run doesn't support nested retries well for long batches, 
     // and embeddingsBatch handles its own internal rate-limits/retries).
